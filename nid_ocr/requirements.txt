@@ -1,0 +1,10 @@
+Flask
+easyocr
+opencv-python
+dlib
+matplotlib
+nltk
+Pillow
+requests
+numpy==1.26.4
+scikit-image==0.22.0
