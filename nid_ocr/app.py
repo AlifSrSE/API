@@ -12,25 +12,18 @@ from io import BytesIO
 from PIL import Image
 import requests
 
-# 🔸 Download NLTK punkt tokenizer if needed
 try:
     nltk.data.find('tokenizers/punkt')
 except LookupError:
     nltk.download('punkt')
 
-# 🔸 Explicitly download 'punkt_tab' as it might be required by newer NLTK versions
 try:
     nltk.data.find('tokenizers/punkt_tab')
 except LookupError:
     nltk.download('punkt_tab')
 
-# 🔸 Initialize Flask
 app = Flask(__name__)
-
-# 🔸 EasyOCR reader - Now supports both English and Bengali
 en_bn_reader = easyocr.Reader(['en', 'bn'])
-
-# 🔸 DLIB model download and setup
 DLIB_MODEL_PATH = "./shape_predictor_68_face_landmarks.dat"
 
 def download_dlib_model(path):
@@ -55,6 +48,28 @@ predictor = dlib.shape_predictor(DLIB_MODEL_PATH)
 
 MONTH_NAME = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sept', 'Oct', 'Nov', 'Dec']
 
+BANGLADESH_DISTRICTS = [
+    "চট্টগ্রাম", "কুমিল্লা", "ফেনী", "ব্রাহ্মণবাড়িয়া", "রাঙ্গামাটি", "নোয়াখালী", "চাঁদপুর", "লক্ষ্মীপুর",
+    "কক্সবাজার", "খাগড়াছড়ি", "বান্দরবান", "রাজশাহী", "সিরাজগঞ্জ", "পাবনা", "বগুড়া", "নাটোর",
+    "জয়পুরহাট", "চাঁপাইনবাবগঞ্জ", "নওগাঁ", "খুলনা", "যশোর", "সাতক্ষীরা", "মেহেরপুর", "নড়াইল",
+    "চুয়াডাঙ্গা", "কুষ্টিয়া", "মাগুরা", "বাগেরহাট", "ঝিনাইদহ", "বরিশাল", "ঝালকাঠি", "পটুয়াখালী",
+    "পিরোজপুর", "ভোলা", "বরগুনা", "সিলেট", "মৌলভীবাজার", "হবিগঞ্জ", "সুনামগঞ্জ", "ঢাকা",
+    "নরসিংদী", "গাজীপুর", "শরীয়তপুর", "নারায়ণগঞ্জ", "টাঙ্গাইল", "কিশোরগঞ্জ", "মানিকগঞ্জ",
+    "মুন্সিগঞ্জ", "রাজবাড়ী", "মাদারীপুর", "গোপালগঞ্জ", "ফরিদপুর", "রংপুর", "পঞ্চগড়", "দিনাজপুর",
+    "লালমনিরহাট", "নীলফামারী", "গাইবান্ধা", "ঠাকুরগাঁও", "কুড়িগ্রাম", "ময়মনসিংহ", "শেরপুর",
+    "জামালপুর", "নেত্রকোণা"
+]
+
+def enhance_image(img):
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    filtered = cv2.bilateralFilter(gray, 11, 17, 17)
+    enhanced = cv2.adaptiveThreshold(
+        filtered, 255,
+        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        cv2.THRESH_BINARY,
+        15, 10
+    )
+    return enhanced
 
 def EASY_month_matching(sent):
     sent = sent.strip()
@@ -64,7 +79,6 @@ def EASY_month_matching(sent):
         day, month, year = match.groups()
         return f"{day} {month} {year}"
     return None
-
 
 def EASY_NID_matching(sent):
     nid_pattern = re.compile(r'\b(?:\d{10}|\d{17}|(?:\d{3}\s?\d{3}\s?\d{3}\s?\d{1})|(?:\d{3}\s?\d{4}\s?\d{3}\s?\d{4}\s?\d{3}\s?\d{2}))\b')
@@ -78,7 +92,6 @@ def EASY_NID_matching(sent):
         return nid
     return None
 
-
 def make_dataset(img_bytes):
     nparr = np.frombuffer(img_bytes, np.uint8)
     img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
@@ -89,6 +102,7 @@ def make_dataset(img_bytes):
         raise ValueError("Decoded image is empty.")
 
     img = cv2.resize(img, (640, 480))
+    img = enhance_image(img)
     imgOriginal = img.copy()
 
     faces = detector(imgOriginal)
@@ -99,7 +113,6 @@ def make_dataset(img_bytes):
             x1, y1 = face.left(), face.top()
             x2, y2 = face.right(), face.bottom()
 
-            # Broaden the crop to definitely include the text area to the right of the face
             cropped = imgOriginal[max(0, y1-50):min(imgOriginal.shape[0], y2+200),
                                   max(0, x2):min(imgOriginal.shape[1], x2 + 350)]
 
@@ -122,6 +135,11 @@ def make_dataset(img_bytes):
 
     return cropped_img_bytes
 
+def extract_address_from_text(text):
+    match = re.search(r"ঠিকানা[:：]?(.*?)(" + "|".join(BANGLADESH_DISTRICTS) + ")", text)
+    if match:
+        return (match.group(1) + match.group(2)).strip()
+    return None
 
 def Extract_NID_INFO_EASY_OCR(img_bytes):
     info_dict = {
@@ -134,7 +152,8 @@ def Extract_NID_INFO_EASY_OCR(img_bytes):
         "Blood Group": "N/A"
     }
 
-    result_detailed = en_bn_reader.readtext(img_bytes.getvalue(), detail=1)
+    result_detailed = en_bn_reader.readtext(img_bytes.getvalue(), detail=0)
+    text = " ".join(result_detailed)
 
     print("\n--- RAW OCR RESULTS (Text and Bounding Boxes) ---")
     for (bbox, text, prob) in result_detailed:
@@ -154,14 +173,11 @@ def Extract_NID_INFO_EASY_OCR(img_bytes):
                 "height": bbox[2][1] - bbox[0][1]
             })
 
-    # Sort by Y then X for reading order
     text_lines_with_coords.sort(key=lambda x: (x["y_min"], x["x_min"]))
-
     all_text_combined = " ".join([item["text"] for item in text_lines_with_coords])
 
     nid_match = EASY_NID_matching(all_text_combined)
     if nid_match:
-        # Remove spaces for the final NID_no format
         info_dict["NID_no"] = nid_match.replace(" ", "")
 
     dob_match = EASY_month_matching(all_text_combined)
@@ -172,10 +188,10 @@ def Extract_NID_INFO_EASY_OCR(img_bytes):
     father_keywords = ["পিতা", "পিতাঃ", "পিতার নাম", "father", "father's name", "মো:", "md."]
     mother_keywords = ["মাতা", "মাতাঃ", "মাতার নাম", "mother", "mother's name", "মোসাঃ", "mosa."]
     address_keywords = [
-        "ঠিকানা", "বর্তমান ঠিকানা", "স্থায়ী ঠিকানা", "address",
+        "ঠিকানা", "address",
         "বাসা", "গ্রাম", "পোস্ট", "থানা", "জেলা", "উপজেলা", "সিটি কর্পোরেশন",
         "house", "village", "post office", "upazila", "district", "city corporation",
-        "road", "sector", "block", "গোপালগঞ্জ", "সদর", "৮১০০"
+        "road", "sector", "block"
     ]
     blood_group_keywords = ["রক্তের গ্রুপ", "রক্তের", "blood group", "blood"]
     blood_group_pattern = re.compile(r'\b(A|B|AB|O)\s*([+-]|positive|negative)\b', re.IGNORECASE)
